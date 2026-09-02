@@ -1,0 +1,9 @@
+# build artefacts
+*.bak
+*.tmp
+*.swp
+
+# local test artifacts
+/tmp/test-*.pdf
+/tmp/10page*.txt
+/tmp/10page*.ps
