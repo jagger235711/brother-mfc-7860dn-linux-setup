@@ -211,14 +211,16 @@ install_ppd_assets() {
 # features), pass --ppd brother and the install script will register
 # Brother-MFC7860DN-PS alongside the default pxlmono queue.
 choose_ppd() {
-    if [ -n "$FORCE_PPD" ]; then
-        case "$FORCE_PPD" in
-            pxlmono|pxl) PPD_NAME="everywhere.pxlmono";;  # cups-filters driver
-            brother|br)   PPD_NAME="/usr/share/cups/model/brother-mfc7860dn/BR786N_2.PPD";;
-            *)            die "unknown --ppd value: $FORCE_PPD";;
-        esac
-    else
-        # pxlmono is the safest default
+    case "${FORCE_PPD:-}" in
+        ""|pxlmono|pxl) PPD_NAME="";;   # pxlmono, resolved to a file path below
+        brother|br)     PPD_NAME="/usr/share/cups/model/brother-mfc7860dn/BR786N_2.PPD";;
+        *)              die "unknown --ppd value: $FORCE_PPD";;
+    esac
+    if [ -z "$PPD_NAME" ]; then
+        # Always resolve pxlmono to a PPD *file*. CUPS 2.4 removed the
+        # cups-driverd model database lookup for drivers, so model names like
+        # "everywhere.pxlmono" no longer resolve and lpadmin aborts with
+        # "cups-driverd failed to get PPD file".
         PPD_NAME="/usr/share/ppd/cupsfilters/pxlmono.ppd"
         if [ ! -f "$PPD_NAME" ]; then
             warn "pxlmono.ppd not found at $PPD_NAME, trying model dir copy"
@@ -236,9 +238,18 @@ create_queue() {
         say "queue $queue already exists, removing"
         lpadmin -x "$queue" >/dev/null 2>&1 || true
     fi
+    # CUPS 2.4+ deprecated `-m` for driver PPDs (cups-driverd resolves the name
+    # relative to /usr/share/cups/model and rejects absolute paths, producing
+    # "cups-driverd failed to get PPD file"). Use `-P <file>` for a PPD path and
+    # `-m <model>` only for a cups-driverd model name like everywhere.pxlmono.
+    local ppd_flag="-P"
+    case "$ppd" in
+        */*) ppd_flag="-P";;
+        *)   ppd_flag="-m";;
+    esac
     lpadmin -p "$queue" -E \
         -v "$uri" \
-        -m "$ppd" \
+        "$ppd_flag" "$ppd" \
         -D "$desc" || die "lpadmin failed for $queue"
     lpadmin -p "$queue" -o printer-error-policy=abort-job >/dev/null
 }
@@ -300,6 +311,14 @@ main() {
         "socket://$PRINT_IP:9100" \
         "$PPD_NAME" \
         "Brother MFC-7860DN (PCL XL via pxlmono)"
+    # The generic pxlmono PPD ships with *DefaultOptionDuplex: False (duplexer
+    # "Not Installed"). Combined with "*UIConstraints: *Duplex *OptionDuplex
+    # False" every libcups client (GTK, Chromium, LibreOffice) sees
+    # "Double-Sided Printing" as a conflicting choice and silently sends
+    # simplex (Duplex=None, sides=one-sided) - the user's duplex selection is
+    # reverted with no error. The MFC-7860DN duplex unit is real; declare it so
+    # the option survives client-side conflict resolution.
+    lpadmin -p "$QUEUE_DEFAULT" -o OptionDuplex=True >/dev/null
     # Always register the Brother PostScript PPD as a parallel queue, so the
     # user can opt in without re-running the installer.
     create_queue "$QUEUE_FALLBACK_PS" \

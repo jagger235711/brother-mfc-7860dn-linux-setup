@@ -15,6 +15,32 @@ never has to interpret PostScript, so memory pressure stays low.
 The Brother PPD is still installed as the secondary queue
 `Brother-MFC7860DN-PS` for users who need Secure Print or Job Hold features.
 
+## Q: I select two-sided printing and it still prints single-sided.
+
+**A:** The generic `pxlmono.ppd` from `cups-filters` declares the duplex unit
+as not installed:
+
+```
+*DefaultOptionDuplex: False
+*UIConstraints: *Duplex *OptionDuplex False
+```
+
+Print dialogs resolve their options through libcups `ppdMarkOption()`. With
+the duplexer marked not installed, `Duplex` conflicts with
+`OptionDuplex False`, so the dialog drops your choice and submits
+`Duplex=None` + `sides=one-sided`. No error is reported — the job just comes
+out simplex.
+
+The MFC-7860DN's duplex is real hardware, so declare it:
+
+```bash
+sudo lpadmin -p Brother-MFC7860DN -o OptionDuplex=True
+```
+
+`install.sh` does this. Restart the application afterwards — print dialogs
+cache the PPD. Both long-edge and short-edge binding are verified on the
+pxlmono queue.
+
 ## Q: Why socket://9100 instead of ipp://631?
 
 **A:** `ipp://` is the "right" protocol and gives you two-way feedback. But

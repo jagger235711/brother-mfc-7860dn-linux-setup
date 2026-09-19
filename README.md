@@ -57,7 +57,15 @@ The script will:
 6. Create two queues:
    - `Brother-MFC7860DN` — `socket://IP:9100` + `pxlmono.ppd` (default, fast, low memory)
    - `Brother-MFC7860DN-PS` — `ipp://IP/ipp/print` + `BR786N_2.PPD` (Brother official, falls back to PS)
-7. Send a test page.
+7. Declare the duplex unit installed on the default queue (`OptionDuplex=True`).
+   The generic `pxlmono` PPD ships with it marked *Not Installed*, which makes
+   print dialogs silently drop the two-sided option.
+8. Send a test page.
+
+> **CUPS 2.4+ compatibility:** CUPS 2.4 removed the `cups-driverd` model
+> database, so PPDs must be registered by path — `lpadmin -P /path/to.ppd`.
+> The old `-m <model>` form, and model names such as `everywhere.pxlmono`,
+> abort with `cups-driverd failed to get PPD file`. `install.sh` uses `-P`.
 
 ## Usage
 
@@ -84,6 +92,7 @@ Short version:
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | "Memory full" on PDF | BR-Script3 interpreter ran out of VM | Switch to `Brother-MFC7860DN` (pxlmono) queue |
+| Two-sided is ignored, prints single-sided | `pxlmono.ppd` ships with the duplexer marked *Not Installed*, so print dialogs drop the option | `sudo lpadmin -p Brother-MFC7860DN -o OptionDuplex=True` (install.sh does this) |
 | Job submits but nothing prints | Printer is in deep sleep | Press a button on the printer to wake |
 | Queue stuck in "printing" | `socket://` doesn't get IPP callbacks | It's a CUPS display quirk; job did complete |
 | `lpstat` shows `paused` | OPC drum life ended | Replace drum unit (DR-2250) |

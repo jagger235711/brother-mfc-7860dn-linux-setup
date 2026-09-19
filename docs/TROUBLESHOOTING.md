@@ -18,8 +18,12 @@ You should see `/usr/share/cups/model/brother-mfc7860dn/pxlmono.ppd` or
 If you see `BR786N_2.PPD`, you are on the wrong queue:
 
 ```bash
-sudo lpadmin -p Brother-MFC7860DN -m pxlmono.ppd
+sudo lpadmin -p Brother-MFC7860DN -P /usr/share/ppd/cupsfilters/pxlmono.ppd
 ```
+
+> Use `-P <file>`, not `-m <model>`. CUPS 2.4 removed the cups-driverd model
+> database; `-m` with a model name or an absolute path fails with
+> `cups-driverd failed to get PPD file`.
 
 ### Run the diagnostic
 
@@ -41,6 +45,74 @@ lp light.pdf
 
 `/screen` produces ~72 DPI images — small enough that the printer can hold
 the entire raster in buffer.
+
+---
+
+## Two-sided printing is ignored / 双面打印无效
+
+Symptom: you pick "Two-sided" (双面) in the print dialog, the job prints
+fine, but every sheet comes out single-sided and nothing reports an error.
+
+### Cause
+
+The generic `pxlmono.ppd` declares the duplex unit as *not installed*:
+
+```
+*DefaultOptionDuplex: False
+*UIConstraints: *Duplex *OptionDuplex False
+*UIConstraints: *OptionDuplex False *Duplex
+```
+
+Print dialogs (GTK, Chromium, LibreOffice) resolve their options through
+libcups `ppdMarkOption()`. With the duplexer marked not installed, `Duplex`
+conflicts, the client's choice is dropped, and the job goes out as
+`Duplex=None` + `sides=one-sided` — silently.
+
+Confirm from a finished job's control file (name and value are stored as
+separate strings):
+
+```bash
+sudo strings /var/spool/cups/c0000N | grep -a -E 'Duplex|sides'
+# Duplex None sides one-sided        <- the client sent simplex
+# Duplex DuplexNoTumble              <- the client sent duplex
+```
+
+### Fix
+
+Declare the duplex unit installed — the MFC-7860DN has real duplex hardware,
+the generic PPD just cannot know that:
+
+```bash
+sudo lpadmin -p Brother-MFC7860DN -o OptionDuplex=True
+```
+
+Verify (`*` marks the default):
+
+```bash
+lpoptions -p Brother-MFC7860DN -l | grep -E 'Duplex|OptionDuplex'
+# Duplex/Double-Sided Printing: *None DuplexNoTumble DuplexTumble
+# OptionDuplex/Duplexer: *True False
+```
+
+`install.sh` applies this to the default queue. The setting is written into
+the saved PPD (`/etc/cups/ppd/Brother-MFC7860DN.ppd`,
+`*DefaultOptionDuplex: True`), so it survives restarts — but not queue
+recreation. Re-run the installer if you rebuild the queue.
+
+Restart the printing application afterwards: print dialogs cache the PPD
+they fetched.
+
+### Per-job and command line
+
+```bash
+lp -o Duplex=DuplexNoTumble file.pdf      # long edge binding
+lp -o Duplex=DuplexTumble file.pdf        # short edge binding
+lp -o sides=two-sided-long-edge file.pdf  # IPP attribute; CUPS maps it to Duplex
+```
+
+Both bindings are verified on hardware (Manjaro, CUPS 2.4.19, MFC-7860DN):
+`DuplexNoTumble` and `DuplexTumble` each put a two-page document on both
+sides of a single sheet on the pxlmono queue.
 
 ---
 
@@ -158,7 +230,7 @@ file may be malformed or in the wrong directory:
 ```bash
 sudo ls -l /usr/share/cups/model/brother-mfc7860dn/
 sudo systemctl restart cups
-sudo lpadmin -p Brother-MFC7860DN -m /usr/share/cups/model/brother-mfc7860dn/pxlmono.ppd
+sudo lpadmin -p Brother-MFC7860DN -P /usr/share/ppd/cupsfilters/pxlmono.ppd
 ```
 
 ---
