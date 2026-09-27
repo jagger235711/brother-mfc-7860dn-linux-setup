@@ -116,6 +116,73 @@ sides of a single sheet on the pxlmono queue.
 
 ---
 
+## Only one copy prints when you ask for N / 多份打印只出一份
+
+Symptom: you set "Copies: 3" in the print dialog (or `lp -n 3`), the job
+submits and completes without any error, but exactly **one** copy comes out.
+
+### Cause
+
+cupsd passes the copy count to filters as **argv[4]** and deliberately strips
+the `copies` key out of the options string (argv[5]):
+
+```
+argv[4]="3"
+argv[5]="finishings=3 number-up=1 ... sides=two-sided-long-edge ..."   # no copies=
+```
+
+`pdftopdf` inside libcupsfilters **≤ 2.2.1** only honours a `copies=N` key
+found in the options string — the argv[4] → `data->copies` fallback exists
+only in upstream master, not in the released package. So the copy count is
+dropped on the floor:
+
+| Input | pdftopdf output (2-page doc) |
+|---|---|
+| `argv[4]=3`, no `copies=` in options | 2 pages (1 copy) ← what happens with stock filters |
+| `copies=3` in options | 6 pages (3 copies) |
+
+`gstopxl` / Ghostscript's `pxlmono` device ignore `copies` entirely, so
+`universal` is the one filter in the chain that must apply them.
+
+### Fix
+
+```bash
+sudo ./install.sh --ip <printer-ip>       # re-run; it is idempotent
+```
+
+`install.sh` installs `filters/copies-fix.sh` as
+`/usr/lib/cups/filter/universal` (the distro binary is kept as
+`universal.real`). The wrapper re-injects argv[4] as `copies=N` into the
+options string before exec'ing the real filter, so `pdftopdf` performs the
+software copies — in collated order, so duplex jobs stay `1,2,1,2,...`.
+
+Verified on hardware (MFC-7860DN, CUPS 2.4.19, cups-filters 2.0.1 /
+libcupsfilters 2.2.1): `lp -n 3` of a 2-page document → 3 sheets; `lp -n 2`
+with `sides=two-sided-long-edge` → 2 sheets / 4 pages.
+
+Manual install, if you don't want to re-run the whole script:
+
+```bash
+sudo cp -n /usr/lib/cups/filter/universal /usr/lib/cups/filter/universal.real
+sudo install -m 755 filters/copies-fix.sh /usr/lib/cups/filter/universal
+```
+
+### After a cups-filters package upgrade the bug comes back
+
+The package upgrade overwrites the wrapper with the original ELF binary.
+Re-running `sudo ./install.sh --ip <addr>` detects this (the wrapper carries
+the marker `brother-mfc-7860dn-copies-fix`) and reinstalls it.
+
+To check whether the fix is currently active:
+
+```bash
+head -2 /usr/lib/cups/filter/universal
+# marker: brother-mfc-7860dn-copies-fix   <- fix active
+# ELF binary header                        <- stock filter, bug present
+```
+
+---
+
 ## Deep sleep / 深度睡眠
 
 Brother printers enter deep sleep after ~5 min of idle. In deep sleep:

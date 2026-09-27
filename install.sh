@@ -195,6 +195,63 @@ install_ppd_assets() {
     sleep 1
 }
 
+# Multi-copy fix.
+#
+# cupsd passes the job copy count as argv[4] and strips `copies` out of the
+# options string (argv[5]). pdftopdf inside libcupsfilters <= 2.2.1 only
+# honours a `copies=N` key that is present in the options string - the
+# argv[4] -> data->copies fallback exists only in upstream master - so
+# `lp -n 3` printed exactly one copy, silently. Both of this repo's queues
+# start their filter chain with the `universal` filter (cups-filters 2.x),
+# so wrapping `universal` to re-inject argv[4] into the options string fixes
+# it for both queues. See filters/copies-fix.sh for details.
+#
+# Idempotent: skips if already installed, and refreshes universal.real when
+# a cups-filters package upgrade has replaced the wrapper with the ELF again.
+install_copies_fix() {
+    local src_dir marker="brother-mfc-7860dn-copies-fix"
+    local filter_dir="" serverbin d
+    src_dir=$(cd "$(dirname "$0")" && pwd)
+
+    # Locate the CUPS filter dir: Arch/Debian use /usr/lib/cups,
+    # Fedora/RHEL use /usr/libexec/cups. Ask cups-config first.
+    local -a candidates=()
+    if command -v cups-config >/dev/null 2>&1; then
+        serverbin=$(cups-config --serverbin 2>/dev/null || true)
+        [ -n "$serverbin" ] && candidates+=("$serverbin/filter")
+    fi
+    candidates+=(/usr/lib/cups/filter /usr/libexec/cups/filter)
+    for d in "${candidates[@]}"; do
+        if [ -x "$d/universal" ] || [ -f "$d/universal.real" ]; then
+            filter_dir="$d"
+            break
+        fi
+    done
+    if [ -z "$filter_dir" ]; then
+        warn "universal filter not found - multi-copy fix skipped (needs cups-filters 2.x)"
+        return 0
+    fi
+
+    if [ -f "$filter_dir/universal" ] && grep -q "$marker" "$filter_dir/universal" 2>/dev/null; then
+        say "multi-copy fix already installed in $filter_dir"
+        return 0
+    fi
+
+    # Keep (or refresh) the distro binary as universal.real. A cups-filters
+    # upgrade overwrites our wrapper with the ELF, so this also reinstalls
+    # the fix transparently.
+    if [ -f "$filter_dir/universal" ]; then
+        say "saving original universal filter -> $filter_dir/universal.real"
+        cp -f "$filter_dir/universal" "$filter_dir/universal.real"
+    fi
+    if [ ! -x "$filter_dir/universal.real" ]; then
+        warn "no universal binary to wrap - multi-copy fix skipped"
+        return 0
+    fi
+    install -m 0755 "$src_dir/filters/copies-fix.sh" "$filter_dir/universal"
+    say "multi-copy fix installed: lp -n N now prints N copies"
+}
+
 # Decide which PPD to use.
 #
 # Why default to pxlmono:
@@ -306,6 +363,7 @@ main() {
     probe_printer
     install_cups
     install_ppd_assets
+    install_copies_fix
     choose_ppd
     create_queue "$QUEUE_DEFAULT" \
         "socket://$PRINT_IP:9100" \
