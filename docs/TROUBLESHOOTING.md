@@ -160,6 +160,47 @@ Verified on hardware (MFC-7860DN, CUPS 2.4.19, cups-filters 2.0.1 /
 libcupsfilters 2.2.1): `lp -n 3` of a 2-page document → 3 sheets; `lp -n 2`
 with `sides=two-sided-long-edge` → 2 sheets / 4 pages.
 
+### Copy 2 starts on the back of copy 1 (odd-page duplex) / 奇数页双面多份串页
+
+Symptom: an **odd**-page document (say 3 pages), 2+ copies, duplex — copy 2's
+page 1 is printed on the back of copy 1's last sheet, so the sheets run
+together instead of each copy starting fresh.
+
+### Cause
+
+pdftopdf *does* pad odd-length documents to an even page count when duplex
+(`if ((d->last_page & 1) && duplex) d->last_page ++`), but the padded slot
+only survives pdftopdf's **layout path**. The fast path (selected when
+`number-up=1`, no scaling, no rotation and **no `orientation-requested`**)
+copies pages with `if (outpage->input[0]) pdfioPageCopy(...)`, and the padded
+slot's input is NULL — pdfioFileGetPage() has no such page in the source
+document — so the blank separator page is silently dropped:
+
+| Job | pdftopdf output |
+|---|---|
+| 3 pages × 2 copies, duplex, stock filter | 6 pages `1,2,3,1,2,3` → sheets `1\|2, 3\|1, 2\|3` ← interleaved |
+| same, layout path active | 8 pages `1,2,3,_,1,2,3,_` → sheets `1\|2, 3\|_ , 1\|2, 3\|_` ✓ |
+
+A second trap: pdftopdf keys its duplex detection (and hence the padding) off
+the IPP `sides` option **only**, so a job submitted as
+`lp -o Duplex=DuplexNoTumble` never triggers it either.
+
+### Fix
+
+The same wrapper covers this too. For multi-copy duplex jobs it:
+
+1. synthesizes `sides=two-sided-long-edge` / `-short-edge` when only
+   `Duplex=` is present, and
+2. appends `orientation-requested=3` (portrait — an identity transform for
+   pdftopdf, and neither queue's PPD defines `*OrientationRequested`, so
+   nothing downstream re-reads it) to force the layout path where the blank
+   separator page is actually emitted.
+
+Single-copy and non-duplex jobs get no injection at all. Multi-copy duplex
+jobs always do (the wrapper does not parse the PDF to check parity), but for
+even-page documents no padding slot is created, so the page count and content
+are unchanged — only the internal rendering path differs.
+
 Manual install, if you don't want to re-run the whole script:
 
 ```bash

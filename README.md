@@ -97,6 +97,7 @@ Short version:
 | "Memory full" on PDF | BR-Script3 interpreter ran out of VM | Switch to `Brother-MFC7860DN` (pxlmono) queue |
 | Two-sided is ignored, prints single-sided | `pxlmono.ppd` ships with the duplexer marked *Not Installed*, so print dialogs drop the option | `sudo lpadmin -p Brother-MFC7860DN -o OptionDuplex=True` (install.sh does this) |
 | "2 copies" prints 1 copy | cupsd passes the count as `argv[4]`, but pdftopdf (libcupsfilters ≤ 2.2.1) only reads `copies=N` from the options string | `sudo ./install.sh` again — it installs the multi-copy wrapper filter (see below) |
+| Odd-page duplex, copy 2 starts on the back of copy 1 | pdftopdf's odd→even padding is dropped by its fast copy path (`NULL` ghost page skipped) | same wrapper — it forces pdftopdf's layout path for multi-copy duplex jobs (see TROUBLESHOOTING) |
 | Job submits but nothing prints | Printer is in deep sleep | Press a button on the printer to wake |
 | Queue stuck in "printing" | `socket://` doesn't get IPP callbacks | It's a CUPS display quirk; job did complete |
 | `lpstat` shows `paused` | OPC drum life ended | Replace drum unit (DR-2250) |
