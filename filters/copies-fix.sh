@@ -17,7 +17,8 @@
 # before handing the job to the real filter, so pdftopdf performs the
 # software copies (in collated order, so duplex jobs stay correctly ordered:
 # 1,2,1,2,...). For multi-copy duplex jobs it also makes sure pdftopdf's
-# odd-page blank-page padding actually survives (see "Odd-page duplex
+# odd-page blank-page padding actually survives, without letting the forced
+# layout path flip the back sides 180 degrees (see "Odd-page duplex
 # multi-copy padding" below).
 #
 # No double copying: downstream filters on this printer's chains (gstopxl,
@@ -75,40 +76,61 @@ done
 # copies duplex came out as 6 pages 1,2,3,1,2,3 -> sheets 1|2, 3|1, 2|3,
 # i.e. copy 2 started on the back of copy 1.
 #
-# Two inputs decide that path / the padding:
-#   * pdftopdf keys its duplex detection (and thus the padding) off the
-#     IPP `sides` option only. A job submitted as `lp -o Duplex=DuplexNoTumble`
-#     never reaches it. Synthesize the matching `sides` value when missing.
-#   * the fast path is selected only when orientation-requested is unset.
-#     `orientation-requested=3` (portrait) is an identity transform for
-#     pdftopdf - it merely forces the layout path, where the padded slot is
-#     emitted as a real blank page (`pdfio_start_page()` is called
-#     unconditionally). Neither queue's PPD defines *OrientationRequested,
-#     so nothing downstream re-reads the injected value; existing
-#     orientation-requested values are left untouched (any explicit value
-#     already forces the layout path anyway).
+# Two inputs decide that path / the padding, so for multi-copy duplex jobs
+# this wrapper rewrites the options it passes to the real filter (cupsd
+# gives every filter in the chain its own copy of the original options
+# string, so downstream gstopxl/pdftops are NOT affected by the rewrite):
+#
+#   1. orientation-requested=3 (portrait, an identity transform) forces the
+#      layout path, where the padded slot is emitted as a real blank page
+#      (`pdfio_start_page()` is called unconditionally). Neither queue's
+#      PPD defines *OrientationRequested, so nothing re-reads the injected
+#      value; an orientation-requested already sent by the application is
+#      left untouched (any explicit value already forces the layout path).
+#
+#   2. sides is forced to `two-sided-short-edge` - a deliberate lie about a
+#      value pdftopdf is the only consumer of here. pdftopdf hardcodes
+#      sheet_back="rotated" (libcupsfilters 2.2.1, no option to change it)
+#      and on the layout path that ROTATES EVERY BACK SIDE 180 degrees when
+#      sides=two-sided-long-edge:
+#        `(!strcmp(sheet_back, "rotated") && !strcmp(sides, "two-sided-long-edge"))`
+#      -> duplex_xform = [-1 0; 0 -1] (rotate 180).
+#      The fast path never applied this transform, which is why long-edge
+#      duplex looked correct before this wrapper forced the layout path -
+#      and wrong (backs upside down) after. With sides=two-sided-short-edge
+#      the branch does not fire (no transform at all = pre-fix rendering),
+#      while the padding still triggers, because pdftopdf's duplex test is
+#      only `strncmp(sides, "two-sided-", 10)`.
+#      Downstream is unaffected: gstopxl derives -dDuplex from the PPD
+#      `Duplex=` option (untouched) and cfGetBackSideOrientation() reads
+#      printer attributes, never the job's sides value.
 case "$copies" in
     ''|0|1|*[!0-9]*) multi=0 ;;
     *) multi=1 ;;
 esac
 
 if [ "$multi" = 1 ]; then
-    duplex=0 has_sides=0 has_orientation=0
+    duplex=0 has_orientation=0
     for opt in $new_opts; do
         case "$opt" in
-            sides=two-sided-*)       duplex=1; has_sides=1 ;;
+            sides=two-sided-*)       duplex=1 ;;
             Duplex=Duplex*)          duplex=1 ;;   # DuplexTumble/NoTumble, not Duplex=None
             orientation-requested=*) has_orientation=1 ;;
         esac
     done
 
     if [ "$duplex" = 1 ]; then
-        if [ "$has_sides" = 0 ]; then
-            case "$new_opts" in
-                *Duplex=DuplexTumble*) new_opts="$new_opts sides=two-sided-short-edge" ;;
-                *)                     new_opts="$new_opts sides=two-sided-long-edge" ;;
+        # Drop the original sides= value(s), then hand pdftopdf the
+        # rotation-neutral one (see above).
+        rebuilt=""
+        for opt in $new_opts; do
+            case "$opt" in
+                sides=*) ;;
+                *) rebuilt="$rebuilt $opt" ;;
             esac
-        fi
+        done
+        new_opts="$rebuilt sides=two-sided-short-edge"
+
         if [ "$has_orientation" = 0 ]; then
             new_opts="$new_opts orientation-requested=3"
         fi

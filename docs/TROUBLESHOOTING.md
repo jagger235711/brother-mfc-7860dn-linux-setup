@@ -189,12 +189,31 @@ the IPP `sides` option **only**, so a job submitted as
 
 The same wrapper covers this too. For multi-copy duplex jobs it:
 
-1. synthesizes `sides=two-sided-long-edge` / `-short-edge` when only
-   `Duplex=` is present, and
-2. appends `orientation-requested=3` (portrait — an identity transform for
+1. appends `orientation-requested=3` (portrait — an identity transform for
    pdftopdf, and neither queue's PPD defines `*OrientationRequested`, so
    nothing downstream re-reads it) to force the layout path where the blank
-   separator page is actually emitted.
+   separator page is actually emitted, and
+2. forces the `sides` value it hands to the real filter to
+   `two-sided-short-edge` — a deliberate lie that only pdftopdf sees (cupsd
+   passes each filter in the chain its own copy of the original options, so
+   `gstopxl` still gets the real `sides` and derives `-dDuplex` from the
+   PPD `Duplex=` option, which is left untouched).
+
+   Why the lie: pdftopdf hardcodes `sheet_back="rotated"` (libcupsfilters
+   2.2.1, not configurable) and on the layout path that **rotates every
+   back side 180°** when `sides=two-sided-long-edge`:
+
+   ```
+   (!strcmp(sheet_back, "rotated") && !strcmp(sides, "two-sided-long-edge"))
+       -> duplex_xform = [-1 0; 0 -1]  // rotate 180
+   ```
+
+   The fast path never applied this transform — which is why long-edge
+   duplex looked correct before the layout path was forced, and came out
+   with upside-down backs right after. `two-sided-short-edge` skips that
+   branch (no transform = pre-fix rendering) while still triggering the
+   padding, because pdftopdf's duplex test is only
+   `strncmp(sides, "two-sided-", 10)`.
 
 Single-copy and non-duplex jobs get no injection at all. Multi-copy duplex
 jobs always do (the wrapper does not parse the PDF to check parity), but for
