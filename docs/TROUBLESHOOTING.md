@@ -187,17 +187,19 @@ the IPP `sides` option **only**, so a job submitted as
 
 ### Fix
 
-The same wrapper covers this too. For multi-copy duplex jobs it:
+The same wrapper covers this too:
 
-1. appends `orientation-requested=3` (portrait — an identity transform for
-   pdftopdf, and neither queue's PPD defines `*OrientationRequested`, so
-   nothing downstream re-reads it) to force the layout path where the blank
-   separator page is actually emitted, and
-2. forces the `sides` value it hands to the real filter to
-   `two-sided-short-edge` — a deliberate lie that only pdftopdf sees (cupsd
-   passes each filter in the chain its own copy of the original options, so
-   `gstopxl` still gets the real `sides` and derives `-dDuplex` from the
-   PPD `Duplex=` option, which is left untouched).
+1. for multi-copy duplex jobs it appends `orientation-requested=3`
+   (portrait — an identity transform for pdftopdf, and neither queue's PPD
+   defines `*OrientationRequested`, so nothing downstream re-reads it) to
+   force the layout path where the blank separator page is actually
+   emitted. Single-copy jobs are left on the fast path exactly as before;
+2. for **every** duplex job it forces the `sides` value it hands to the
+   real filter to `two-sided-short-edge` — a deliberate lie that only
+   pdftopdf sees (cupsd passes each filter in the chain its own copy of
+   the original options, so `gstopxl` still gets the real `sides` and
+   derives `-dDuplex` from the PPD `Duplex=` option, which is left
+   untouched).
 
    Why the lie: pdftopdf hardcodes `sheet_back="rotated"` (libcupsfilters
    2.2.1, not configurable) and on the layout path that **rotates every
@@ -215,10 +217,15 @@ The same wrapper covers this too. For multi-copy duplex jobs it:
    padding, because pdftopdf's duplex test is only
    `strncmp(sides, "two-sided-", 10)`.
 
-Single-copy and non-duplex jobs get no injection at all. Multi-copy duplex
-jobs always do (the wrapper does not parse the PDF to check parity), but for
-even-page documents no padding slot is created, so the page count and content
-are unchanged — only the internal rendering path differs.
+Non-duplex jobs are left completely untouched. Multi-copy duplex jobs always
+get the orientation injection (the wrapper does not parse the PDF to check
+parity), but for even-page documents no padding slot is created, so the page
+count and content are unchanged — only the internal rendering path differs.
+The `sides` rewrite is a no-op on the fast path, so normal single-copy duplex
+output stays exactly what it always was; it only matters when the layout path
+is active — either forced here for multi-copy, or forced by the application
+itself (explicit `orientation-requested`, n-up), where it also fixes the same
+upside-down-back flip that stock filters would produce.
 
 Manual install, if you don't want to re-run the whole script:
 

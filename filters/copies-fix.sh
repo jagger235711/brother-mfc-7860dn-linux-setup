@@ -76,20 +76,23 @@ done
 # copies duplex came out as 6 pages 1,2,3,1,2,3 -> sheets 1|2, 3|1, 2|3,
 # i.e. copy 2 started on the back of copy 1.
 #
-# Two inputs decide that path / the padding, so for multi-copy duplex jobs
-# this wrapper rewrites the options it passes to the real filter (cupsd
-# gives every filter in the chain its own copy of the original options
-# string, so downstream gstopxl/pdftops are NOT affected by the rewrite):
+# Two inputs decide that path / the padding, so the wrapper rewrites the
+# options it passes to the real filter (cupsd gives every filter in the
+# chain its own copy of the original options string, so downstream
+# gstopxl/pdftops are NOT affected by the rewrite):
 #
 #   1. orientation-requested=3 (portrait, an identity transform) forces the
 #      layout path, where the padded slot is emitted as a real blank page
-#      (`pdfio_start_page()` is called unconditionally). Neither queue's
-#      PPD defines *OrientationRequested, so nothing re-reads the injected
-#      value; an orientation-requested already sent by the application is
-#      left untouched (any explicit value already forces the layout path).
+#      (`pdfio_start_page()` is called unconditionally) - multi-copy jobs
+#      only, so single-copy jobs keep the fast path exactly as before.
+#      Neither queue's PPD defines *OrientationRequested, so nothing
+#      re-reads the injected value; an orientation-requested already sent
+#      by the application is left untouched (any explicit value already
+#      forces the layout path).
 #
-#   2. sides is forced to `two-sided-short-edge` - a deliberate lie about a
-#      value pdftopdf is the only consumer of here. pdftopdf hardcodes
+#   2. sides is forced to `two-sided-short-edge` - for every duplex job -
+#      a deliberate lie about a value pdftopdf is the only consumer of here.
+#      pdftopdf hardcodes
 #      sheet_back="rotated" (libcupsfilters 2.2.1, no option to change it)
 #      and on the layout path that ROTATES EVERY BACK SIDE 180 degrees when
 #      sides=two-sided-long-edge:
@@ -109,32 +112,36 @@ case "$copies" in
     *) multi=1 ;;
 esac
 
-if [ "$multi" = 1 ]; then
-    duplex=0 has_orientation=0
+duplex=0 has_orientation=0
+for opt in $new_opts; do
+    case "$opt" in
+        sides=two-sided-*)       duplex=1 ;;
+        Duplex=Duplex*)          duplex=1 ;;   # DuplexTumble/NoTumble, not Duplex=None
+        orientation-requested=*) has_orientation=1 ;;
+    esac
+done
+
+if [ "$duplex" = 1 ]; then
+    # Drop the original sides= value(s), then hand pdftopdf the
+    # rotation-neutral one (see above). Applies to single-copy jobs too:
+    # the fast path ignores sides entirely (no transform is ever applied
+    # there), and if the application itself forces the layout path (it
+    # sends orientation-requested, or uses n-up), the same 180-degree
+    # back-side flip would otherwise happen with stock filters as well.
+    rebuilt=""
     for opt in $new_opts; do
         case "$opt" in
-            sides=two-sided-*)       duplex=1 ;;
-            Duplex=Duplex*)          duplex=1 ;;   # DuplexTumble/NoTumble, not Duplex=None
-            orientation-requested=*) has_orientation=1 ;;
+            sides=*) ;;
+            *) rebuilt="$rebuilt $opt" ;;
         esac
     done
+    new_opts="$rebuilt sides=two-sided-short-edge"
+fi
 
-    if [ "$duplex" = 1 ]; then
-        # Drop the original sides= value(s), then hand pdftopdf the
-        # rotation-neutral one (see above).
-        rebuilt=""
-        for opt in $new_opts; do
-            case "$opt" in
-                sides=*) ;;
-                *) rebuilt="$rebuilt $opt" ;;
-            esac
-        done
-        new_opts="$rebuilt sides=two-sided-short-edge"
-
-        if [ "$has_orientation" = 0 ]; then
-            new_opts="$new_opts orientation-requested=3"
-        fi
-    fi
+# Only multi-copy jobs need the layout path (for the blank separator page);
+# single-copy jobs keep the fast path exactly as before.
+if [ "$multi" = 1 ] && [ "$duplex" = 1 ] && [ "$has_orientation" = 0 ]; then
+    new_opts="$new_opts orientation-requested=3"
 fi
 
 exec "$REAL" "$job_id" "$user" "$title" "$copies" "$new_opts" "$@"
